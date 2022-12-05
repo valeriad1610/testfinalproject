@@ -1,30 +1,259 @@
 ---
-title: "FInal Proj Code"
+title: "Final Proj Code"
 author: "Valeria Duran"
 date: "2022-12-05"
 output: github_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r read in and expand data}
+library(tidytext)
+library(dplyr)
+library(stringr)
+library(textdata)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+data2 <- read_csv("~/Library/CloudStorage/OneDrive-HarvardUniversity/MeTooHate.csv") #######need to change to make it able to knit
+data2$index <- 1:nrow(data2) 
+set.seed(11+16+2022)
+dat<-data2[sample(nrow(data2), 40000), ]
+
+# grouping tweets by the user 'newid'
+dat2 <- dat |> unite(newid, location, followers_count, friends_count, remove=FALSE)
+dat2$newid <- as.factor(dat2$newid)
+
+#removing links and stop words 
+links <- "https://t.co/[A-Za-z\\d]+|&amp;"
+dat3 <- dat2 |> filter(!is.na(text)) |>
+  mutate(text = str_replace_all(text, links, "")) |>
+  unnest_tokens(word, text, token = "tweets")
+dat3 <- dat3 |> filter(!word %in% stop_words$word) 
+head(dat3)
 ```
 
-## R Markdown
+```{r making average sentiment variable}
+#getting average sentiment 
+afinn<-get_sentiments("afinn")
+summary<- dat3 |> inner_join(afinn, by = "word") |> 
+  group_by(newid) |>
+  summarize(avgsent=mean(value))
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+#joining back together for a table that has account characteristics and the average sentiment score grouped by user 
+inner_join(summary, dat2, by= 'newid') |> nrow() #27661
+senttable <- inner_join(summary, dat2, by= 'newid')
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+#remove columns not needed 
+senttable <- senttable |>
+  subset(select = -c(status_id, created_at, favorite_count, retweet_count,statuses_count))
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r making a variable for proportion of hateful tweets}
+senttable <- senttable |>
+  group_by(newid) |>
+  mutate(prop = mean(category)) 
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r making variable for number of tweets}
+senttable <- senttable |> 
+  group_by(newid) |>
+  mutate(ntweet=n())
+```
+
+```{r expoloratory part 1}
+senttable |>
+  group_by(newid) |>
+  ggplot(aes(x=followers_count)) + 
+  geom_histogram() +
+  xlab('# of Followers') +
+  labs(caption = 'Figure 1. The distribution of Followers by User') +
+  theme(plot.caption=element_text(hjust = 0, face = "italic"))
+  
+
+senttable |>
+ group_by(newid) |>
+  ggplot(aes(x=friends_count)) + 
+  geom_histogram() +
+  xlab('# of Accounts Following') +
+  labs(caption = 'Figure 2. The distribution of Accounts Following by User') +
+  theme(plot.caption=element_text(hjust = 0, face = "italic"))
+```
+
+```{r remove outliers of following and followers}
+followeriqr<- IQR(senttable$followers_count)
+summary(senttable$followers_count)
+504 + (1.5*followeriqr)
+sum(senttable$followers_count>=4374) #5245
+sub <- senttable |>
+  filter(followers_count<=4374) 
+
+followingiqr<- IQR(senttable$friends_count)
+summary(senttable$friends_count)
+508 + (1.5*followingiqr)
+sum(senttable$friends_count>=2846) #4829
+sub <- sub |>
+  filter(friends_count<=2846) 
+nrow(sub) #20576
+head(sub)
+```
+
+```{r exploratory part 2}
+cor.test(sub$followers_count, sub$friends_count) #0.5652156, p-value < 2.2e-16
+
+#ADD SCATTERPLOT WITH LINE
+sub |>
+  group_by(newid) |>
+  ggplot(aes(x=followers_count, y=friends_count)) + 
+  geom_point()+
+  geom_smooth(method = "lm") + 
+  xlab("# of Followers") +
+  ylab("# of Following") +
+  labs(caption = 'Figure 3. Follower count versus following count per user') +
+  theme(plot.caption=element_text(hjust = 0, face = "italic"))
+``` 
+
+```{r exploratory part 3}
+sub |> 
+  group_by(newid) |>
+  ggplot(aes(followers_count, prop, size=ntweet)) +
+  geom_point() +
+  ylab('Proportion of Hateful Tweets') +
+  xlab('# of Followers') + 
+  labs(caption = 'Figure 4. The proportion of hateful tweets versus number of followers by user') +
+  theme(plot.caption=element_text(hjust = 0, face = "italic"))
+
+sub |> 
+  group_by(newid) |>
+  ggplot(aes(friends_count, prop, size=ntweet)) +
+  geom_point() +
+  ylab('Proportion of Hateful Tweets') +
+  xlab('# of Accounts Following') + 
+  labs(caption = 'Figure 5. The proportion of hateful tweets versus number of following count by user') +
+  theme(plot.caption=element_text(hjust = 0, face = "italic"))
+```
+
+```{r making dichotomozed hateful user variable}
+sub <- sub |> 
+  group_by(newid) |>
+  mutate(prop = mean(category == 1)) |>
+  mutate(hateful=case_when(
+    prop > 0 ~ 1,
+    prop == 0 ~ 0
+  )) 
+
+sub$hateful <- as.factor(sub$hateful)
+
+sub |>
+  ggplot(aes(x=hateful, y=avgsent)) + 
+  geom_boxplot() +
+  xlab('Hateful User') +
+  ylab('Avergae Sentiment of Tweets per User') +
+  scale_x_discrete(labels=c("1" = "Yes", "0" = "No"))+
+  labs(caption = 'Figure 5. Average aentiment among Hateful and nonhateful users') +
+  theme(plot.caption=element_text(hjust = 0, face = "italic"))
+
+
+logit1 <- glm(hateful ~ avgsent + followers_count, data=sub, family='binomial')
+summary(logit1)
+```
+
+```{r showing the datasets}
+head(data2)
+head(sub)
+```
+
+
+```{r creating the train and test set}
+dsub<- sub[!duplicated(sub$newid), ]
+y <- as.factor(dsub$hateful)
+test_index <- createDataPartition(y, times = 1, p = 0.2, list = FALSE)
+
+test_set <- dsub[test_index, ]
+train_set <- dsub[-test_index, ]
+
+nrow(train_set) # 14933
+nrow(test_set) # 3735
+```
+
+```{r using average user sentiment to predict hateful accounte}
+test_set$hateful <- as.factor(test_set$hateful)
+train_set$hateful <- as.factor(train_set$hateful)
+lm_fit <- mutate(train_set, y = hateful == 1)   
+lm_fit2<- lm(y ~ avgsent, data = lm_fit) 
+
+#PREDICTION RULE OF 0.5
+p_hat <- predict(lm_fit2, test_set)
+y_hat <- ifelse(p_hat > 0.5, '1', '0') |> as.factor()
+hist(p_hat)
+confusionMatrix(y_hat, test_set$hateful)$overall[["Accuracy"]] #0.8353414
+cm1 <- confusionMatrix(data=y_hat, reference = test_set$hateful)
+cm1
+```
+
+```{r adding following and follower}
+fit_glm <- glm(hateful ~ avgsent + followers_count+friends_count, data=train_set, family = "binomial")
+p_hat_glm <- predict(fit_glm, test_set, type="response")
+hist(p_hat_glm)
+y_hat_glm <- factor(ifelse(p_hat_glm > 0.5, '1', '0')) 
+confusionMatrix(y_hat_glm, test_set$hateful)$overall["Accuracy"] #0.8353
+cm2 <- confusionMatrix(data=y_hat_glm, reference = test_set$hateful)
+cm2
+```
+
+```{r how did probability change?}
+str(p_hat)
+str(p_hat_glm)
+dfp_hat <- data.frame(p_hat)
+dfp_hat_glm <- data.frame(p_hat_glm)
+
+dfp_hat_glm <- dfp_hat_glm |>
+  rename("p" = "p_hat_glm")
+
+dfp_hat <- dfp_hat |>
+  rename("p" = "p_hat")
+
+dfp <- rbind(dfp_hat, dfp_hat_glm)
+
+ggplot(dfp, aes(x= p)) + 
+  geom_histogram(data = dfp_hat, fill = "red", alpha = 0.2) + 
+  geom_histogram(data = dfp_hat_glm, fill = "blue", alpha = 0.4) +
+  theme()
+```
+
+```{r how does it change when we only take those that have tweeted more than once?}
+table(dsub$ntweet>=2,dsub$hateful==1)
+
+sub2 <- sub |>
+  filter(ntweet>=2)
+nrow(sub2) 
+
+dsub2<- sub2[!duplicated(sub2$newid), ]
+nrow(dsub2)
+y <- as.factor(dsub2$hateful)
+test_index <- createDataPartition(y, times = 1, p = 0.2, list = FALSE)
+
+test_set <- dsub2[test_index, ]
+train_set <- dsub2[-test_index, ]
+
+class(dsub2$hateful)
+test_set$hateful <- as.factor(test_set$hateful)
+train_set$hateful <- as.factor(train_set$hateful)
+lm_fit <- mutate(train_set, y = hateful == 1)   
+lm_fit2<- lm(y ~ avgsent, data = lm_fit) 
+
+#PREDICTION RULE OF 0.5
+p_hat <- predict(lm_fit2, test_set)
+hist(p_hat)
+y_hat <- ifelse(p_hat > 0.5, '1', '0') |> as.factor()
+confusionMatrix(y_hat, test_set$hateful)$overall[["Accuracy"]] #0.7273
+cm1 <- confusionMatrix(data=y_hat, reference = test_set$hateful)
+cm1
+
+fit_glm <- glm(hateful ~ avgsent + followers_count+ friends_count, data=train_set, family = "binomial")
+p_hat_glm <- predict(fit_glm, test_set, type="response")
+hist(p_hat_glm)
+y_hat_glm <- factor(ifelse(p_hat_glm > 0.5, '1', '0')) 
+confusionMatrix(y_hat_glm, test_set$hateful)$overall["Accuracy"] #0.7272727 
+
+cm2 <- confusionMatrix(data=y_hat_glm, reference = test_set$hateful)
+cm2
+```
